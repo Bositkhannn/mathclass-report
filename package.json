@@ -4,7 +4,6 @@
   "main": "report.js",
   "dependencies": {
     "firebase-admin": "^11.0.0",
-    "xlsx": "^0.18.5",
-    "node-fetch": "^2.6.9"
+    "xlsx": "^0.18.5"
   }
 }
