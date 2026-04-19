@@ -1,32 +1,32 @@
 const admin = require('firebase-admin');
-const XLSX = require('xlsx');
-const fetch = require('node-fetch');
+const XLSX  = require('xlsx');
+const https = require('https');
 
-// Initialize Firebase Admin with environment variables
+// ── Firebase init ──────────────────────────────────────────────
 admin.initializeApp({
     credential: admin.credential.cert({
-        projectId: process.env.FIREBASE_PROJECT_ID,
+        projectId:   process.env.FIREBASE_PROJECT_ID,
         clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-        privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n')
+        privateKey:  process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n')
     })
 });
 
 const db = admin.firestore();
 
+// ── Main ───────────────────────────────────────────────────────
 async function main() {
     console.log('📊 Starting daily report...');
 
     // Load settings
     const settingsDoc = await db.collection('settings').doc('main').get();
-    const settings = settingsDoc.data();
+    const settings    = settingsDoc.exists ? settingsDoc.data() : {};
 
-    if (!settings?.token || !settings?.chatId) {
-        console.log('❌ No Telegram token/chatId found in settings');
+    if (!settings.token || !settings.chatId) {
+        console.log('❌ No Telegram token/chatId found in Firestore settings');
         process.exit(0);
     }
 
-    const token  = settings.token;
-    const chatId = settings.chatId;
+    const { token, chatId } = settings;
 
     // Load students
     const studentsSnap = await db.collection('students').get();
@@ -34,37 +34,46 @@ async function main() {
         .map(d => ({ uid: d.id, ...d.data() }))
         .filter(s => !s.deleted);
 
-    // Load today's results (Tashkent = UTC+5)
-    const now     = new Date();
-    const tashkent = new Date(now.getTime() + 5 * 60 * 60 * 1000);
-    const today   = tashkent.toDateString();
+    console.log(`👥 Total active students: ${students.length}`);
 
-    const resultsSnap = await db.collection('results').get();
+    // Tashkent = UTC+5
+    const nowUTC     = new Date();
+    const tashkentMs = nowUTC.getTime() + 5 * 60 * 60 * 1000;
+    const tashkent   = new Date(tashkentMs);
+    const todayStr   = tashkent.toDateString();
+
+    // Load today's results
+    const resultsSnap  = await db.collection('results').get();
     const todayResults = resultsSnap.docs
         .map(d => d.data())
         .filter(r => {
             if (!r.timestamp) return false;
-            const rDate = new Date(new Date(r.timestamp).getTime() + 5 * 60 * 60 * 1000);
-            return rDate.toDateString() === today && r.type === 'daily';
+            const rTashkent = new Date(new Date(r.timestamp).getTime() + 5 * 60 * 60 * 1000);
+            return rTashkent.toDateString() === todayStr && r.type === 'daily';
         });
 
-    // Load active daily tasks
+    console.log(`📋 Today's daily results: ${todayResults.length}`);
+
+    // Load active daily tasks (activated within last 24 hours)
     const DAILY_ACTIVE_MS = 24 * 60 * 60 * 1000;
-    const nowMs = Date.now();
-    const dailySnap = await db.collection('dailyTasks').get();
-    const activeTasks = dailySnap.docs
+    const nowMs           = Date.now();
+    const dailySnap       = await db.collection('dailyTasks').get();
+    const activeTasks     = dailySnap.docs
         .map(d => ({ id: d.id, ...d.data() }))
         .filter(dt => dt.activatedAt && (nowMs - dt.activatedAt) < DAILY_ACTIVE_MS);
 
+    console.log(`✅ Active daily tasks: ${activeTasks.length}`);
+
     if (!activeTasks.length) {
-        console.log('No active daily tasks today');
-        await sendTelegramText(token, chatId,
-            `📊 Kunlik hisobot — ${tashkent.toLocaleDateString('uz-UZ')}\n\n⚠️ Bugun faol kunlik topshiriq yo'q edi.`
+        await sendText(token, chatId,
+            `📊 Kunlik hisobot — ${tashkent.toLocaleDateString('uz-UZ')}\n\n` +
+            `⚠️ Bugun faol kunlik topshiriq yo'q edi.`
         );
+        console.log('No active tasks — sent notice to Telegram');
         return;
     }
 
-    // Build report rows
+    // Build Excel rows
     const rows = [['Ism', 'Sinf', 'Login', 'Holat', 'Ball', 'Topshiriq', 'Vaqt']];
 
     for (const s of students) {
@@ -74,27 +83,27 @@ async function main() {
         if (!myTasks.length) continue;
 
         const done = todayResults.filter(r =>
-            r.student === s.name && r.grade === s.grade
+            r.student === (s.name || s.username) && r.grade === s.grade
         );
 
         if (done.length) {
             done.forEach(r => {
-                const rTime = new Date(new Date(r.timestamp).getTime() + 5 * 60 * 60 * 1000);
+                const rTashkent = new Date(new Date(r.timestamp).getTime() + 5 * 60 * 60 * 1000);
                 rows.push([
                     s.name || s.username,
                     s.grade,
-                    s.username,
+                    s.username || '',
                     '✅ Bajarildi',
                     `${r.score}/${r.total}`,
-                    r.title,
-                    rTime.toLocaleTimeString('uz-UZ')
+                    r.title || '',
+                    rTashkent.toLocaleTimeString('uz-UZ')
                 ]);
             });
         } else {
             rows.push([
                 s.name || s.username,
                 s.grade,
-                s.username,
+                s.username || '',
                 '❌ Bajarilmadi',
                 '-',
                 '-',
@@ -103,58 +112,118 @@ async function main() {
         }
     }
 
-    // Sort: completed first, then by grade
-    const header = rows[0];
-    const data   = rows.slice(1).sort((a, b) => {
-        if (a[3] === b[3]) return a[1].localeCompare(b[1]);
-        return a[3] === '✅ Bajarildi' ? -1 : 1;
+    // Sort: completed first, then alphabetically by grade
+    const header  = rows[0];
+    const dataRows = rows.slice(1).sort((a, b) => {
+        if (a[3] !== b[3]) return a[3] === '✅ Bajarildi' ? -1 : 1;
+        return a[1].localeCompare(b[1]);
     });
-    const sorted = [header, ...data];
+    const sorted = [header, ...dataRows];
 
-    // Build Excel
+    // Build Excel file
     const wb = XLSX.utils.book_new();
     const ws = XLSX.utils.aoa_to_sheet(sorted);
     ws['!cols'] = [
-        { wch: 22 }, { wch: 8 }, { wch: 16 },
-        { wch: 14 }, { wch: 8 }, { wch: 24 }, { wch: 10 }
+        { wch: 22 }, { wch: 8 }, { wch: 18 },
+        { wch: 14 }, { wch: 8 }, { wch: 26 }, { wch: 10 }
     ];
     XLSX.utils.book_append_sheet(wb, ws, 'Hisobot');
     const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
 
-    // Summary
-    const doneCount   = data.filter(r => r[3] === '✅ Bajarildi').length;
-    const missedCount = data.filter(r => r[3] === '❌ Bajarilmadi').length;
+    // Summary caption
+    const doneCount   = dataRows.filter(r => r[3] === '✅ Bajarildi').length;
+    const missedCount = dataRows.filter(r => r[3] === '❌ Bajarilmadi').length;
     const dateStr     = tashkent.toLocaleDateString('uz-UZ');
-    const caption     = `📊 Kunlik hisobot — ${dateStr}\n\n✅ Bajarildi: ${doneCount} ta\n❌ Bajarilmadi: ${missedCount} ta\nJami: ${doneCount + missedCount} ta o'quvchi`;
+    const caption     =
+        `📊 Kunlik hisobot — ${dateStr}\n\n` +
+        `✅ Bajarildi: ${doneCount} ta\n` +
+        `❌ Bajarilmadi: ${missedCount} ta\n` +
+        `👥 Jami: ${doneCount + missedCount} ta o'quvchi`;
 
-    // Send Excel to Telegram
-    await sendTelegramDocument(token, chatId, buffer, `hisobot_${dateStr.replace(/\./g,'-')}.xlsx`, caption);
+    const filename = `hisobot_${dateStr.replace(/\./g, '-')}.xlsx`;
+    await sendDocument(token, chatId, buffer, filename, caption);
     console.log(`✅ Report sent! Done: ${doneCount}, Missed: ${missedCount}`);
 }
 
-async function sendTelegramText(token, chatId, text) {
-    await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chat_id: chatId, text, parse_mode: 'HTML' })
+// ── Telegram: send text ────────────────────────────────────────
+function sendText(token, chatId, text) {
+    return new Promise((resolve, reject) => {
+        const body    = JSON.stringify({ chat_id: chatId, text, parse_mode: 'HTML' });
+        const bodyBuf = Buffer.from(body, 'utf8');
+
+        const options = {
+            hostname: 'api.telegram.org',
+            path:     `/bot${token}/sendMessage`,
+            method:   'POST',
+            headers:  {
+                'Content-Type':   'application/json',
+                'Content-Length': bodyBuf.length
+            }
+        };
+
+        const req = https.request(options, res => {
+            let data = '';
+            res.on('data', chunk => data += chunk);
+            res.on('end', () => {
+                try { resolve(JSON.parse(data)); }
+                catch(e) { resolve(data); }
+            });
+        });
+        req.on('error', reject);
+        req.write(bodyBuf);
+        req.end();
     });
 }
 
-async function sendTelegramDocument(token, chatId, buffer, filename, caption) {
-    const { FormData, Blob } = require('node-fetch');
-    const form = new FormData();
-    form.append('chat_id', chatId);
-    form.append('caption', caption);
-    form.append('document', new Blob([buffer], {
-        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-    }), filename);
+// ── Telegram: send Excel document ─────────────────────────────
+function sendDocument(token, chatId, buffer, filename, caption) {
+    return new Promise((resolve, reject) => {
+        const boundary = 'BOUNDARY_' + Date.now();
+        const CRLF     = '\r\n';
 
-    await fetch(`https://api.telegram.org/bot${token}/sendDocument`, {
-        method: 'POST',
-        body: form
+        const metaPart =
+            `--${boundary}${CRLF}` +
+            `Content-Disposition: form-data; name="chat_id"${CRLF}${CRLF}` +
+            `${chatId}${CRLF}` +
+            `--${boundary}${CRLF}` +
+            `Content-Disposition: form-data; name="caption"${CRLF}${CRLF}` +
+            `${caption}${CRLF}` +
+            `--${boundary}${CRLF}` +
+            `Content-Disposition: form-data; name="document"; filename="${filename}"${CRLF}` +
+            `Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet${CRLF}${CRLF}`;
+
+        const closing = `${CRLF}--${boundary}--${CRLF}`;
+        const body    = Buffer.concat([
+            Buffer.from(metaPart, 'utf8'),
+            buffer,
+            Buffer.from(closing, 'utf8')
+        ]);
+
+        const options = {
+            hostname: 'api.telegram.org',
+            path:     `/bot${token}/sendDocument`,
+            method:   'POST',
+            headers:  {
+                'Content-Type':   `multipart/form-data; boundary=${boundary}`,
+                'Content-Length': body.length
+            }
+        };
+
+        const req = https.request(options, res => {
+            let data = '';
+            res.on('data', chunk => data += chunk);
+            res.on('end', () => {
+                try { resolve(JSON.parse(data)); }
+                catch(e) { resolve(data); }
+            });
+        });
+        req.on('error', reject);
+        req.write(body);
+        req.end();
     });
 }
 
+// ── Run ────────────────────────────────────────────────────────
 main().catch(err => {
     console.error('❌ Error:', err);
     process.exit(1);
