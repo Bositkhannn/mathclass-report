@@ -4,12 +4,11 @@ on:
   schedule:
     # 23:59 Tashkent time = 18:59 UTC
     - cron: '59 18 * * *'
-  workflow_dispatch:  # allows manual trigger from GitHub Actions tab
+  workflow_dispatch:
 
 jobs:
   send-report:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
