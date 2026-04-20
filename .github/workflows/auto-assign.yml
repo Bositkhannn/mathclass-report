@@ -2,7 +2,7 @@ name: Auto Assign Daily Task
 
 on:
   schedule:
-    # 14:00 Tashkent = 09:00 UTC
+    # 14:00 Tashkent time = 09:00 UTC
     - cron: '0 9 * * *'
   workflow_dispatch:
 
@@ -26,4 +26,4 @@ jobs:
           FIREBASE_PROJECT_ID:   ${{ secrets.FIREBASE_PROJECT_ID }}
           FIREBASE_CLIENT_EMAIL: ${{ secrets.FIREBASE_CLIENT_EMAIL }}
           FIREBASE_PRIVATE_KEY:  ${{ secrets.FIREBASE_PRIVATE_KEY }}
-        run: node auto-assign.js
+        run: node report.js autoassign
