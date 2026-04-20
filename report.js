@@ -40,10 +40,12 @@ async function main() {
     console.log(`👥 Total active students: ${students.length}`);
 
     // Tashkent = UTC+5
-    const nowUTC     = new Date();
-    const tashkentMs = nowUTC.getTime() + 5 * 60 * 60 * 1000;
-    const tashkent   = new Date(tashkentMs);
-    const todayStr   = tashkent.toDateString();
+    // Tashkent = UTC+5
+// At cron time (23:59 Tashkent = 18:59 UTC), we want TODAY in Tashkent
+const nowUTC      = new Date();
+const tashkentMs  = nowUTC.getTime() + 5 * 60 * 60 * 1000;
+const tashkent    = new Date(tashkentMs);
+const todayStr    = tashkent.toDateString(); // e.g. "Sat Apr 19 2026"
 
     // Load today's results
     const resultsSnap  = await db.collection('results').get();
