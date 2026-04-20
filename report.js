@@ -2,6 +2,9 @@ const admin = require('firebase-admin');
 const XLSX  = require('xlsx');
 const https = require('https');
 
+// Auto-assign if no active task by 14:00 Tashkent = 09:00 UTC
+exports.autoAssignDaily = functions?.pubsub 
+
 // ── Firebase init ──────────────────────────────────────────────
 admin.initializeApp({
     credential: admin.credential.cert({
@@ -208,6 +211,8 @@ function sendDocument(token, chatId, buffer, filename, caption) {
                 'Content-Length': body.length
             }
         };
+
+        
 
         const req = https.request(options, res => {
             let data = '';
