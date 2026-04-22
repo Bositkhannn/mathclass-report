@@ -16,7 +16,10 @@ const DAILY_ACTIVE_MS = 24 * 60 * 60 * 1000;
 
 // ── Tashkent time helper ───────────────────────────────────────
 function tashkentNow() {
-    return new Date(Date.now() + 5 * 60 * 60 * 1000);
+    // Subtract 2 hours as buffer for GitHub Actions delay
+    // Report runs at 23:59 Tashkent but may be delayed up to ~1hr
+    // So we always report for "2 hours ago" in Tashkent = definitely yesterday's date
+    return new Date(Date.now() + 5 * 60 * 60 * 1000 - 2 * 60 * 60 * 1000);
 }
 
 // ── Telegram: send text ────────────────────────────────────────
