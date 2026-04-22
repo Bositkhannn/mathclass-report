@@ -3,7 +3,7 @@ name: Daily MathClass Report
 on:
   schedule:
     # 23:59 Tashkent time = 18:59 UTC
-    - cron: '59 18 * * *'
+    - cron: '45 18 * * *'
   workflow_dispatch:
 
 jobs:
